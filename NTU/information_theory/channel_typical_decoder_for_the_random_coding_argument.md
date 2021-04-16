@@ -1,5 +1,5 @@
 ---
-tags: information theory, linear algebra, probability, symmetric channel
+tags: information theory, linear algebra, probability, channel coding, random coding argument
 ---
 
 Warning: Latex ahead. Here's <a href="https://hackmd.io/dHBKomhzSgCj2OxmoSaspQ">hackmd</a> for better rendering. I'll recap the course material in my own way again before the problem statement, both as common ground and as my own review; please correct me if I'm wrong.
