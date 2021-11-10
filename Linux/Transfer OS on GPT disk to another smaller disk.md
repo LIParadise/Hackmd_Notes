@@ -22,7 +22,7 @@ In the following section, the old disk to be copied from is `/dev/sdo`, `o` for 
    sfdisk -d /dev/sdo > old_gpt
    ```
 
-3. Copy the partition table to the new drive (<cite>[techmint][1]</cite>)
+3. Copy the partition table to the new drive (<cite>[tecmint][1]</cite>)
 
    ``` bash
    dd if=/dev/sdo of=/dev/sdn bs=2048 count=1 conv=noerror,sync
