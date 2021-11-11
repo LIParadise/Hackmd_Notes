@@ -88,7 +88,8 @@ In the following section, the old disk to be copied from is `/dev/sdo`, `o` for 
 
 ## Final Remarks
 
-For MBR drives, things need to be modified. At least the `bs` in `dd` should be `512` (<cite>[techmint][1]</cite>). I'm not so sure about if MBR needs to or can be fixed like above with `gdisk` though.
+- For MBR drives, things need to be modified. At least the `bs` in `dd` should be `512` (<cite>[techmint][1]</cite>). I'm not so sure about if MBR needs to or can be fixed like above with `gdisk` though.
+- So after turning my now-migrated Windows on, I found something weird: drive optimization don't show `C:\`, i.e. my system disk aka pm981 in Orico RTL9210-based USB enclosure. Any trim method also don't work, including `defrag` and `optimize-volume` in Windows and `fstrim` in Linux. This used not to be the case. So I ran `sfc /cannow` and `DISM /Online /Cleanup-Image /RestoreHealth`, but it didn't help. Don't have the slightest clue, I put the USB enclosure onto my PC. Turns out there seems to be something wrong with the NTFS: my PC Windows warned me the drive may have some problems as soon as I plugged in, and a `chkdsk` run stopped with an `unexpected error`. Out of despair I tried re-plug in PC once again, but this time use the GUI dialog to "scan and fix". It (miraculously) worked: now the drive can be trimmed normally in Windows, and none of further runs of `chkdsk`, `sfc`, or `dism` reveal any problems.
 
 
 
