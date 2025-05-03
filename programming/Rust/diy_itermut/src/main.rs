@@ -1,4 +1,4 @@
-use diy_itermut::MyIterMut;
+use diy_itermut::{MyIterMut, QuineDotIterMut};
 
 fn main() {
     let mut strings = ["yjsp", "114514", "sakanaction"]
@@ -8,6 +8,10 @@ fn main() {
 
     dbg!(&strings);
     for s in MyIterMut::from(&mut strings) {
+        s.push('!');
+    }
+    dbg!(&strings);
+    for s in QuineDotIterMut::from(&mut strings) {
         s.push('!');
     }
     dbg!(&strings);
