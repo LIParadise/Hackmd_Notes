@@ -132,3 +132,90 @@ fn bar<'f>(#[allow(unused)] f: &mut Foo<'f>) {
     }
 }
 ```
+
+### Invariant Corollaries
+
+```rust
+//! https://quinedot.github.io/rust-learning/pf-shared-nested.html
+
+use std::cell::Cell;
+
+fn valid_snek() {
+    #[derive(Debug)]
+    struct ShareableSnek<'a> {
+        owned: &'a str,
+        borrowed: Cell<&'a str>,
+    }
+
+    #[cfg(true)]
+    impl<'a> Drop for ShareableSnek<'a> {
+        fn drop(&mut self) {}
+    }
+
+    impl<'a> ShareableSnek<'a> {
+        fn bite(&self) {
+            // it's fine to have non-trivial `impl Drop`:
+            // https://quinedot.github.io/rust-learning/pf-shared-nested.html#this-is-still-a-yellow-flag
+            // we're merely giving out what we've borrowed by _not_ restricting lifetime on `&self`:
+            // it's probably something _shorter_ than `'a`:
+            // given `&'short &'long str`, we may have `&'long str` just fine: just copy it out!
+            // https://quinedot.github.io/rust-learning/st-invariance.html
+            self.borrowed.set(&self.owned);
+        }
+    }
+
+    let snek = ShareableSnek {
+        owned: "🐍",
+        borrowed: Cell::new(""),
+    };
+
+    snek.bite();
+
+    // Unlike the `&mut` case, we can still use `snek`!  It's borrowed forever,
+    // but it's "only" *shared*-borrowed forever.
+    println!("{snek:?}");
+}
+
+fn invalid_snek() {
+    #[derive(Debug)]
+    struct ShareableSnek<'a> {
+        owned: String,
+        borrowed: Cell<&'a str>,
+    }
+
+    #[cfg(false)]
+    impl<'a> Drop for ShareableSnek<'a> {
+        fn drop(&mut self) {
+            // this won't compile if enabled
+        }
+    }
+
+    impl<'a> ShareableSnek<'a> {
+        fn bite(&'a self) {
+            // since the field being `String` rather than a `&'a str`,
+            // we have to use `&'a self`,
+            // but the `Self` type is invariant over `'a` thx to the `Cell`,
+            // meaning we have no choice but to borrow ourself forever (in a shareable way):
+            // the `&'a self` is actually `&'a ShareableSnek<'a>`,
+            // and again `ShareableSnek<'a>` is invariant over `'a`!
+            self.borrowed.set(&self.owned);
+        }
+    }
+
+    let snek = ShareableSnek {
+        owned: "🐍".to_string(),
+        borrowed: Cell::new(""),
+    };
+
+    snek.bite();
+
+    // Unlike the `&mut` case, we can still use `snek`!  It's borrowed forever,
+    // but it's "only" *shared*-borrowed forever.
+    println!("{snek:?}");
+}
+
+fn main() {
+    valid_snek();
+    invalid_snek();
+}
+```
