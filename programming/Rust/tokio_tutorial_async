@@ -1,0 +1,9 @@
+# [Async in Depth](https://tokio.rs/tokio/tutorial/async)
+
+## [`futures::task::ArcWake`](https://docs.rs/futures/0.3.31/futures/task/trait.ArcWake.html)
+
+The [`std::task::Waker`](https://doc.rust-lang.org/std/task/struct.Waker.html) is kinda an advanced topic: it _has_ to implement both `Send` and `Sync`, plus the standard way to do this is via manual `unsafe` vtable construction via [`RawWakerVTable`](https://doc.rust-lang.org/std/task/struct.RawWakerVTable.html).
+
+This is where trait [`futures::task::ArcWake`](https://docs.rs/futures/0.3/futures/task/trait.ArcWake.html) comes in. The only thing you need to do is implement some struct that's `Send` and `Sync` plus some function that takes `&Arc<Self>` which does the actual _notify the executor_ thing in a fearless concurrency way, then [`futures::task::waker`](https://docs.rs/futures/0.3.31/futures/task/fn.waker.html) may help you generate a `std::task::Waker` struct, similarly [`futures::task::waker_ref`](https://docs.rs/futures/0.3.31/futures/task/fn.waker_ref.html) creates a [`futures::task::WakerRef`](https://docs.rs/futures/0.3.31/futures/task/struct.WakerRef.html) which provides access to some `&std::task::Waker`.
+
+In other words, you'd still need `Send` plus `Sync` for your underlying actual implementation struct, since `std::task::Waker` is designed to be called concurrently, but you don't need to worry about all those `unsafe` vtables `RawWakerVTable`: just use `&Arc<Self>` to implement the logic and let `futures::task::ArcWake` do the heavy lifting.
