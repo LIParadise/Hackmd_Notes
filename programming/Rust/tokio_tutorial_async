@@ -7,3 +7,46 @@ The [`std::task::Waker`](https://doc.rust-lang.org/std/task/struct.Waker.html) i
 This is where trait [`futures::task::ArcWake`](https://docs.rs/futures/0.3/futures/task/trait.ArcWake.html) comes in. The only thing you need to do is implement some struct that's `Send` and `Sync` plus some function that takes `&Arc<Self>` which does the actual _notify the executor_ thing in a fearless concurrency way, then [`futures::task::waker`](https://docs.rs/futures/0.3.31/futures/task/fn.waker.html) may help you generate a `std::task::Waker` struct, similarly [`futures::task::waker_ref`](https://docs.rs/futures/0.3.31/futures/task/fn.waker_ref.html) creates a [`futures::task::WakerRef`](https://docs.rs/futures/0.3.31/futures/task/struct.WakerRef.html) which provides access to some `&std::task::Waker`.
 
 In other words, you'd still need `Send` plus `Sync` for your underlying actual implementation struct, since `std::task::Waker` is designed to be called concurrently, but you don't need to worry about all those `unsafe` vtables `RawWakerVTable`: just use `&Arc<Self>` to implement the logic and let `futures::task::ArcWake` do the heavy lifting.
+
+## About `std::task::Waker`
+
+As stated in [Async in Depth](https://tokio.rs/tokio/tutorial/async), `Future` are often associated with top-level executor _tasks_ to the executor. Similar statement has been hinted in this [Kevin Reid](https://stackoverflow.com/a/75960167/25255815) answer.
+
+```rust
+/// A structure holding a future and the result of
+/// the latest call to its `poll` method.
+struct TaskFuture {
+    future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    poll: Poll<()>,
+}
+
+struct Task {
+    // The `Mutex` is to make `Task` implement `Sync`. Only
+    // one thread accesses `task_future` at any given time.
+    // The `Mutex` is not required for correctness. Real Tokio
+    // does not use a mutex here, but real Tokio has
+    // more lines of code than can fit in a single tutorial
+    // page.
+    task_future: Mutex<TaskFuture>,
+    executor: mpsc::Sender<Arc<Task>>,
+}
+```
+
+Specifically, [`std::task::Context`](https://doc.rust-lang.org/std/task/struct.Context.html) provided to each [`std::future::Future::poll`](https://doc.rust-lang.org/std/future/trait.Future.html#tymethod.poll) carries information to the executor about which future, most likely also which top-level task, is (probably, since spurious calls are fine) ready to make some progress.
+
+Here's the problem. `impl Future` instances are free to be moved between top-level tasks (if `Send`, that is, as this is not specified so depend on the executore implementation), and the actual meat of the `Future` implementation is probably some sort of concurrent primitive, in some cases maybe it's just another thread. And that thread holds the `Waker`. How to ensure that we invoke the right `Waker`, since as `std::future::Future::poll` got called, the worker thread may also be concurrently invoking `Waker::wake` and terminating itself?
+
+The answer to the question, as noted by Kevin Reid, is that in a concurrent setting, `impl Future` is free to `Waker::wake` any `Waker` it had been supplied with: Rust `async`/`.await` has always been stating that spurious `Waker::wake` and `Future::poll` are possible and permitted. The key is that _all_ the provided `Waker` should be invoked.
+
+But this still leaves the question that _how_ to ensure correctness: what if right during the fresh `std::future::Future::poll` associated with the new top-level task is concurrently happening as the back ground thread had called the (stale) waker and is already tearing down itself, s.t. the `Future::poll` sees thread yet done and stores the waker (possibly both locally and sent to the thread via some channel), only to end up no one ever pickes up the `std::task::Waker`? Well this is concurrent code, so extra care needs to be done, as usual. Spcifically, [Freyja](https://stackoverflow.com/a/75960161/25255815) recommended [`futures::task::AtomicWaker`](https://docs.rs/futures/latest/futures/task/struct.AtomicWaker.html), s.t. if we adhere to these two principles, we're good to go:
+
+1. There's some _background task completed_ flag shared between the background worker thread and the `Future`.
+2. The worker thread must set the _background task completed_ flag **before** it wakes the `future::task::AtomicWaker`.
+3. The `Future` must register a new `future::task::AtomicWaker` **before** it checks the _background task completed_ flag.
+
+Proof sketch:
+
+1. If no `Future::poll` called, happy path, we're fine.
+    - The executor code _must_ `Future::poll` if `Future` were to be moved. Lacking this is not on us, but the executor implementation.
+2. Assuming _background task completed_ serves for _synchronizes-with_/_happens-before_ relation.
+    1. The worker wakes the `future::task::AtomicWaker` before the latest fresh `future::task::AtomicWaker` had been registered.
