@@ -41,12 +41,19 @@ The answer to the question, as noted by Kevin Reid, is that in a concurrent sett
 But this still leaves the question that _how_ to ensure correctness: what if right during the fresh `std::future::Future::poll` associated with the new top-level task is concurrently happening as the back ground thread had called the (stale) waker and is already tearing down itself, s.t. the `Future::poll` sees thread yet done and stores the waker (possibly both locally and sent to the thread via some channel), only to end up no one ever pickes up the `std::task::Waker`? Well this is concurrent code, so extra care needs to be done, as usual. Spcifically, [Freyja](https://stackoverflow.com/a/75960161/25255815) recommended [`futures::task::AtomicWaker`](https://docs.rs/futures/latest/futures/task/struct.AtomicWaker.html), s.t. if we adhere to these two principles, we're good to go:
 
 1. There's some _background task completed_ flag shared between the background worker thread and the `Future`.
-2. The worker thread must set the _background task completed_ flag **before** it wakes the `future::task::AtomicWaker`.
-3. The `Future` must register a new `future::task::AtomicWaker` **before** it checks the _background task completed_ flag.
+2. The worker thread must set the _background task completed_ flag **before** it wakes the `futures::task::AtomicWaker`.
+3. The `Future` must register a new `futures::task::AtomicWaker` **before** it checks the _background task completed_ flag.
 
 Proof sketch:
 
 1. If no `Future::poll` called, happy path, we're fine.
     - The executor code _must_ `Future::poll` if `Future` were to be moved. Lacking this is not on us, but the executor implementation.
-2. Assuming _background task completed_ serves for _synchronizes-with_/_happens-before_ relation.
-    1. The worker wakes the `future::task::AtomicWaker` before the latest fresh `future::task::AtomicWaker` had been registered.
+2. `Future::poll` called, somehow the worker wakes the `futures::task::AtomicWaker` before the latest fresh `futures::task::AtomicWaker` had been registered.
+    - Then this exact invokation of `Future::poll` would see the flag, for the worker thread asserts it before wakes its (stale) waker. And work is done, return `Poll::Ready`.
+3. `Future::poll` called, the registration of the latest `std::task::Waker` associated with the `Future::poll` is done before the worker thread calls `Waker::wake` on its waker. This exact invokation of `Future::poll` may or may not see the flag.
+    - If it sees the flag, then whether or not the latest fresh `Waker` is `Waker::wake`-ed doesn't matter: this exact invokation of `Future::poll` returns `Poll::Ready` anyway.
+    - If OTOH this exact invokation of `Future::poll` does not see the flag, then since the premise mentions that the latest `Waker` had been registered before the worker thread tries to `Waker::wake`, that exact latest fresh `futures::task::AtomicWaker` got `Waker::wake`-ed, and we're good to go.
+
+Except here's the complication: in case 2., which pair of operations _synchronizes-with_ each other, in the process granting us _happens-before_ relation? The worker thread `Waker::wake` the `futures::task::AtomicWaker`, which we know is the stale one, meaning whichever top-level task registered it, though that registration should indeed _happen-before_ this `Waker::wake`, it has nothing to do with this current `Future::poll` invokation. Thus there's no one guarantee that just because the worker thread, in its own program order, had assert the flag before `Waker::wake` the `futures::task::AtomicWaker`, and we `Future::poll` check the flag after registering the `futures::task::AtomicWaker` before checking the flag in program order, too, that this exact invokation of `Future::poll` should see the flag.
+
+Well this is where those memory orderings that are stronger than `Acquire`/`Release` shines. As stated in the [`futures::task::AtomicWaker`](https://docs.rs/futures/0.3.31/futures/task/struct.AtomicWaker.html#memory-ordering) documentation, it's additionally guaranteed that a `register` also `Acquire` all the memory writes before the `wake` since it's also a `Release`. Thus the flag is indeed guaranteed to be seen in this case. We need [them](https://docs.rs/futures-core/0.3.31/src/futures_core/task/__internal/atomic_waker.rs.html#292) [`AcqRel`](https://docs.rs/futures-core/0.3.31/src/futures_core/task/__internal/atomic_waker.rs.html#382).
