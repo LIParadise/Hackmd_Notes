@@ -65,7 +65,7 @@ Having a `&SyncWrapper<T>` is never useful, for it exposes no API taking `&SyncW
 I figured out the _exclusiveness_ part of `Send` myself, then I discovered that [Alice][Alice] had figured out the better, more general definitions, which I'll summarize in my own words as follows:
 
 - `Send` is about whether you allow anything that _requires exclusive access to be done_ to be done _in other threads_
-  - ~我也想過過過兒過過的生活~
+  - ~~我也想過過過兒過過的生活~~
   - Rust _never_ allows multiple `&mut T`, so automatically we're assuming additionaly that the operations are done in some _mutually exclusive_ way, just like `Mutex`
     - I.e. whether you allow `&mut T` to be present on any other threads besides where `T` had born
   - Move
