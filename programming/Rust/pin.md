@@ -28,28 +28,29 @@ The point is, these are constructs that we don't want them to ever move.
 For `Future`, it's since you as a Rust programmer definitely want `async` code to _feel_ the same as generic Rust code, in particular you'd want to use _references_.
 You want _pointers_ that may (or may not, who knows) point to your _stack_ variables, except when you realize you don't really have a stack: you're but some passive `struct`, you do not own the usual execution context. The whole stack concept, implemented with modifying `sp`, `jalr`, and `ret`, is simply absent: it's the runtime who own the execution context.
 You are but a mere finite state machine.
-All you can do is make your type _big_ enough then you may place all the transient values in yourself besides your state information.
-Then you realized you too cannot be moved, just like intrusive data structures, except this time the pointers are those borrows of your "stack" variable.
+All you can do is make your type _big_ enough s.t. you may place all the transient values in yourself besides your state information.
+This is when you realized now you too cannot be moved, just like intrusive data structures, except this time the pointers are those borrows of your "stack" variable.
 They are derived from pre-calculated offset associated within you as an FSM. They are your self pointers.
 
 You might wonder, at least for self pointers, why not just compile references in `async` blocks not to pointers in the C sense but simply _offsets_ from the `this` pointer equivalent?
-The problem is, [you cannot know statically](https://without.boats/blog/pin) if a reference is a synchronous context one (thus pointers in C sense) or an `async` one. So we are sticked with traditional pointers.
+The problem is, [you cannot know statically](https://without.boats/blog/pin) if a reference is a synchronous context one (thus pointers in C sense) or an `async` one. So we are stuck with traditional pointers.
 
-However, note how Rust is designed s.t. moves are everywhere and every type is supposed to be trivially movable, and there's supposed to be no observable side effects if compiler actually moves something.
+However, note how Rust is designed s.t. moves are everywhere and every type is supposed to be trivially movable, and there's supposed to be no observable effect if compiler did move anything.
 
-These are pointers, and pointers are `unsafe` in Rust.
-Now the objective becomes that we need some mechanism to enforce certain invariants (the item not moved, and the `Drop` is always called before the space got repurposed) s.t. we may start writing `unsafe` code that are actually _sound_.
-This is exactly why we have `!Unpin` and `Pin`.
+After all we're talking about pointers, and pointers are `unsafe` in Rust.
+So the objective becomes that we need some mechanism to enforce certain invariants (the item not moved, plus that the `Drop` is always called before the space got repurposed); only then we can write `unsafe` code that are actually _sound_.
+This is exactly why we have `!Unpin` and `Pin`. They are compiler enforced invariants for programmers to build a safe and sound API around `unsafe` pointer black magic.
 
 ## The Gist of `Pin`
 
 Just like `Send` and `Sync`, turns out `Unpin`/`!Unpin` is also all about your API design.
 
-Your `struct` have _self pointers_ (intrusive data structures) or simply want to expose some associated function that modify yourself but at the same time secretly store pointers to yourself somewhere, which may be used later to [point back to yourself](https://doc.rust-lang.org/1.93.0/std/pin/index.html#fn2) (custom `Future` implementations).
-Then you _must_ mark the [receiver](https://doc.rust-lang.org/1.93.0/std/ops/trait.Receiver.html) as `Pin<&mut Self>` (`Pin<&Self>` works albeit [tricker](https://users.rust-lang.org/t/why-is-it-unsafe-to-pin-a-shared-reference/40309/12)), _and_ you hold a [`PhantomPinned`](https://doc.rust-lang.org/std/marker/struct.PhantomPinned.html) to mark yourself as `!Unpin`.
-In these methods your `unsafe` code may now assume that besides these `unsafe` block, no safe code would never _ever_ accidentally move you - only `unsafe` can do so, and that's on you as the programmer since, well, `unsafe`. Often `unsafe` code cannot trust safe code [too much](https://doc.rust-lang.org/nomicon/working-with-unsafe.html), but with `Pin<&mut Self>` and `!Unpin`, you may rest assured that all problems (and don't get me wrong, there's a bunch of problem: pointers are [hard](https://github.com/rust-lang/unsafe-code-guidelines/issues/84)) are right here in the `unsafe` blocks.
-That's it. `Pin` is created to make `unsafe` code easier to write, since by default safe Rust move things transparently.
-And the implementation turns out to be surprisingly simple: just gate all the pointer access behind `unsafe` associated method of `Pin`, and introduce `Unpin` s.t. those who actually need such guarantee to do some `unsafe` things may opt in.
+Say your `struct` have _self pointers_ (intrusive data structures) or simply want to expose some associated function that modify yourself but at the same time secretly store pointers to yourself somewhere, which may be used later to [point back to yourself](https://doc.rust-lang.org/1.93.0/std/pin/index.html#fn2) (custom `Future` [implementations](https://docs.rs/tokio/1.49.0/src/tokio/time/sleep.rs.html#132-137)).
+You need `unsafe` to work with instances of your type, in particular you don't want safe code to have any chance moving your values.
+So you _must_ mark the [receiver](https://doc.rust-lang.org/1.93.0/std/ops/trait.Receiver.html) as `Pin<&mut Self>` (`Pin<&Self>` works albeit [tricker](https://users.rust-lang.org/t/why-is-it-unsafe-to-pin-a-shared-reference/40309/12)), _and_ you hold a [`PhantomPinned`](https://doc.rust-lang.org/std/marker/struct.PhantomPinned.html) to mark yourself as `!Unpin`.
+In associated functions of which receiver is `Pin<Ptr: Deref<Target = T>>`, your `unsafe` code may now assume that besides your own `unsafe` blocks, safe code could never _ever_ accidentally move you - only `unsafe` can do so, and so that's on you as the programmer since, well, `unsafe`. Often `unsafe` code cannot trust safe code [too much](https://doc.rust-lang.org/nomicon/working-with-unsafe.html), but with `Pin<&mut Self>` and `!Unpin`, you may rest assured that all problems (there's ton of problem working with `unsafe`: pointers are [hard](https://github.com/rust-lang/unsafe-code-guidelines/issues/84)) originates right here in your own `unsafe` blocks. Once `Pin`-ed, nobody except you as the author of `T` could move the value.
+That's it. `Pin` is created to make `unsafe` code easier to reason about, since again by default safe Rust move things transparently.
+And the implementation turns out to be surprisingly simple: introduce `Unpin` _safe_ auto trait s.t. those who actually need the guarantees brought by `!Unpin` to do `unsafe` things must hold a `PhantomPinned` themselves to become `!Unpin`, and for such types we gate all the pointer accesses behind `unsafe`.
 
 While we're on it, we better also do something when our type goes out of scope, i.e. we want to `impl Drop`, since we better somehow clear all the pointers out there: dangling pointers are unwelcomed. I mean they are introduced to point back to us via our own (private) `unsafe` blocks, so there's no way clear them except of course we do this in our own `Drop` implementation.
 You may heard that leaking memory being [safe](https://doc.rust-lang.org/1.93.0/std/boxed/struct.Box.html#method.leak) i.e. skipping the `Drop` implementation is safe. Safe code may ackchyually do even more "bizarre" things, like skip the `Drop` _and_ wipe the memory where the value once lived right afterwards: [`ManuallyDrop::new`](https://doc.rust-lang.org/1.93.0/std/mem/struct.ManuallyDrop.html#method.new) is safe!
