@@ -54,11 +54,12 @@ And the implementation turns out to be surprisingly simple: introduce `Unpin` _s
 
 While we're on it, we better also do something when our type goes out of scope, i.e. we want to `impl Drop`, since we better somehow clear all the pointers out there: dangling pointers are unwelcomed. I mean they are introduced to point back to us via our own (private) `unsafe` blocks, so there's no way clear them except of course we do this in our own `Drop` implementation.
 You may heard that leaking memory being [safe](https://doc.rust-lang.org/1.93.0/std/boxed/struct.Box.html#method.leak) i.e. skipping the `Drop` implementation is safe. Safe code may ackchyually do even more "bizarre" things, like skip the `Drop` _and_ wipe the memory where the value once lived right afterwards: [`ManuallyDrop::new`](https://doc.rust-lang.org/1.93.0/std/mem/struct.ManuallyDrop.html#method.new) is safe!
-And this is a trouble. We dealt with the pointers we introduced in the associated methods of which receiver being `Pin<&mut Self>` in the `Drop` implementation. But safe code is free to skip our delicate aftermath routine, WTH?
+And this is a trouble. We clean up all the pointers we introduced in the associated methods of which receiver being `Pin<&mut Self>` in our `Drop` implementation. But safe code is free to skip our delicate aftermath routine, WTH?
 
-Well `Pin` got your back. Your type `T` needs pointer magic. As discussed it's up to you to hold a `PhantomPinned` to make `T: !Unpin`.
-As such safe code cannot construct any `Pin<Ptr: Deref<Target = T>>`, so those "dangerous" methods where pointer black magic happen are not ever called i.e. no `unsafe` code is actually run and all is well - remember that associated functions in which black magic `unsafe` block lives shall have receiver being `Pin<Ptr>`?.
-I mean you can with [pin!](https://doc.rust-lang.org/1.93.0/core/pin/macro.pin.html) but this code also ensures no safe code could play the `ManuallyDrop` trick anymore: the `Drop` is never skipped by safe code.
+Once again `Pin` got your back. So your type `T` needs pointer magic. As discussed it's up to you to hold a `PhantomPinned` to make `T: !Unpin`.
+Being `!Unpin`, safe code alone have little means constructing `Pin<Ptr: Deref<Target = T>>`; if there's no `Pin<Ptr>`, no "dangerous" method where pointer black magic happen would ever be called, i.e. no `unsafe` code is actually run and all is well - remember that associated functions in which black magic `unsafe` block lives shall have receiver being `Pin<Ptr>`?.
+Well you can create a `Pin<Ptr>` for `T: !Unpin` with [pin!](https://doc.rust-lang.org/1.93.0/core/pin/macro.pin.html). But by calling this macro, safe code cannot play the `ManuallyDrop` trick anymore.
+Or you may do [`Pin::new(Box::leak(T::new()))`](https://doc.rust-lang.org/1.93.0/std/marker/trait.Unpin.html#impl-Unpin-for-%26mut+T) to have a `Pin<&mut T>` using only safe Rust. But now you can't get your reference back out from the `Pin` so that memory is leaked forever. Yes you skipped the `Drop`, but there's no space repurpose or invalidation going on, thus this is again totally sound.
 But how about when `Drop` is skipped [in `unsafe` code](https://doc.rust-lang.org/1.93.0/core/pin/index.html#drop-guarantee)?
 Welp that's entirely on you. You created some `Pin<Ptr: Deref<Target = T>>` _via `unsafe`_ since `T: !Unpin`, and you wrote some other `unsafe` code that intentionally skipped some `Drop` implementation, i.e. you broke your own `Pin`/`!Unpin` contract.
 Your Rust program is now memory unsafe and `SIGSEGV` ensues.
@@ -70,7 +71,7 @@ Finally if instead of `struct` - remember, `Future`/FSM and intrusive data struc
 ## TL;DR
 
 - `Pin` feels alien simply since you're not supposed to notice nothing when values got moved in Rust
-- Except over ther years (mainly with `async`/`Future`) we find that we do at times _need_ to ensure value is pinned in place and its `Drop` always called.
+- Except over ther years (mainly with `async`/`Future`) we find that we do at times _need_ to ensure value is pinned in place and its `Drop` always called before the space got repurposed or deallocated.
 - `!Unpin` together with `Pin` is for compiler and `unsafe` block wielders to have some way to ensure safe code could never ever move their precious values.
   - `unsafe` is like freedom. You can do everything, and that's why you must be care what (not) to do.
     - Do not move them out via e.g. `std::mem::swap`.
