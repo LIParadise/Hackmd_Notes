@@ -59,8 +59,9 @@ And this is a trouble. We clean up all the pointers we introduced in the associa
 Once again `Pin` got your back. So your type `T` needs pointer magic. As discussed it's up to you to hold a `PhantomPinned` to make `T: !Unpin`.
 Being `!Unpin`, safe code alone have little means constructing `Pin<Ptr: Deref<Target = T>>`; if there's no `Pin<Ptr>`, no "dangerous" method where pointer black magic happen would ever be called, i.e. no `unsafe` code is actually run and all is well - remember that associated functions in which black magic `unsafe` block lives shall have receiver being `Pin<Ptr>`?.
 Well you can create a `Pin<Ptr>` for `T: !Unpin` with [pin!](https://doc.rust-lang.org/1.93.0/core/pin/macro.pin.html). But by calling this macro, safe code cannot play the `ManuallyDrop` trick anymore.
-Or you may do [`Pin::new(Box::leak(T::new()))`](https://doc.rust-lang.org/1.93.0/std/marker/trait.Unpin.html#impl-Unpin-for-%26mut+T) to have a `Pin<&mut T>` using only safe Rust. But now you can't get your reference back out from the `Pin` so that memory is leaked forever. Yes you skipped the `Drop`, but there's no space repurpose or invalidation going on, thus this is again totally sound.
-But how about when `Drop` is skipped [in `unsafe` code](https://doc.rust-lang.org/1.93.0/core/pin/index.html#drop-guarantee)?
+You might think you may instead do e.g. [`Pin::new(Box::leak(T::new()))`](https://doc.rust-lang.org/1.93.0/std/marker/trait.Unpin.html#impl-Unpin-for-%26mut+T) to have a `Pin<&mut T>` using only safe Rust. Yes you may skip the `Drop` this way, but ackchyually this is not possible in safe Rust, since `Pin::new` requires `Ptr: Deref<Target: Unpin>`.
+
+How about when `Drop` is skipped [in `unsafe` code](https://doc.rust-lang.org/1.93.0/core/pin/index.html#drop-guarantee)?
 Welp that's entirely on you. You created some `Pin<Ptr: Deref<Target = T>>` _via `unsafe`_ since `T: !Unpin`, and you wrote some other `unsafe` code that intentionally skipped some `Drop` implementation, i.e. you broke your own `Pin`/`!Unpin` contract.
 Your Rust program is now memory unsafe and `SIGSEGV` ensues.
 
