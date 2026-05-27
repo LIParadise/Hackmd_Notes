@@ -22,9 +22,23 @@ Note that this design has a merit that when inside a function returning `Option<
 
 # Questions
 
+## Multiple [`FromResidual`][from-residual-trait] Implementations for Certain Types
+
 At first glance, since every (generic) type may only implement `Try` once, and that exact implementation defines exactly the (generic) associated type `<T as Try>::Residual`, based on which `FromResidual`/`?` is implemented, why some [types](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3COption%3CInfallible%3E%3E-for-Option%3CT%3E) [have](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CYeet%3C()%3E%3E-for-Option%3CT%3E) [multiple](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CResult%3CInfallible,+E%3E%3E-for-Result%3CT,+F%3E) [implementations](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CYeet%3CE%3E%3E-for-Result%3CT,+F%3E) of [`FromResidual`](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#implementors), for you cannot implement `Try` twice anyway, no? Trait specialization comes to play here, or is `FromResidual` "overloaded" in purpose here? What is [`Yeet`][yeet] anyway?
 
-# Naive Demo
+## When Does The `?` Operator Apply?
+
+I mean even with `#![feature(try_trait_v2, try_trait_v2_residual)]`, it seems one cannot use `?` within arbitrary function, even though that function returns one's customized type which is/implements `Try`...?
+
+## What Is [`try_trait_v2_residual`][try-trait-v2-residual] Anyway?
+
+If you're gonna play with `Try` in May 2026, you're gonna need both `try_trait_v2` and `try_trait_v2_residual` enabled using nightly (`cargo 1.98.0-nightly (4d1f98451 2026-05-15)`). Basically boils down to implement `std::ops::Residual` for your (generic) associated type `<T as Try>::Residual` and _link_ to the `T: Try`.
+
+# Demos
+
+## Super Trait
+
+This one works with 1.95.0 stable (`cargo 1.95.0 (f2d3ce0bd 2026-03-21)`).
 
 ```rust
 use std::{
@@ -78,6 +92,73 @@ fn main() {
 }
 ```
 
+# Another Demo
+
+This plays with `Try`/`FromResidual`/`Residual`: it's possible to make your type accomodate `<T as Try>::Residual` for several `T`: another trait!
+
+Assumes `cargo 1.98.0-nightly (4d1f98451 2026-05-15)`.
+
+```rust
+#![feature(try_trait_v2, try_trait_v2_residual)]
+#![allow(unused)]
+
+use std::{
+    any::type_name_of_val,
+    convert::Infallible,
+    ops::Try,
+    ops::{ControlFlow, FromResidual},
+};
+
+enum Triable<O, R> {
+    Output(O),
+    Residual(R),
+}
+trait RecyclableResidue {}
+
+impl<O, R> Try for Triable<O, R>
+where
+    R: RecyclableResidue,
+{
+    type Residual = Triable<Infallible, R>;
+    type Output = O;
+    fn branch(self) -> ControlFlow<<Self as Try>::Residual, <Self as Try>::Output> {
+        match self {
+            Triable::Residual(r) => ControlFlow::Break(Triable::Residual(r)),
+            Triable::Output(o) => ControlFlow::Continue(o),
+        }
+    }
+    fn from_output(output: <Self as Try>::Output) -> Self {
+        Triable::Output(output)
+    }
+}
+impl<O, R: RecyclableResidue> std::ops::Residual<O> for Triable<Infallible, R> {
+    type TryType = Triable<O, R>;
+}
+impl<O, R: RecyclableResidue> FromResidual<Triable<Infallible, R>> for Triable<O, R> {
+    fn from_residual(residual: Triable<Infallible, R>) -> Self {
+        let Triable::Residual(residual) = residual;
+        Triable::Residual(residual)
+    }
+}
+
+impl<O, R> RecyclableResidue for ControlFlow<R, O> {}
+impl<O, R> RecyclableResidue for Result<O, R> {}
+
+fn main() {
+    let v = vec![
+        Triable::Output(()),
+        Triable::Residual(Result::<Infallible, _>::Err("野獣先輩")),
+    ];
+    v.into_iter().try_for_each(std::convert::identity);
+
+    let v = vec![
+        Triable::Output(()),
+        Triable::Residual(ControlFlow::<_, Infallible>::Break("野獣先輩")),
+    ];
+    v.into_iter().try_for_each(std::convert::identity);
+}
+```
+
 # References
 
 [`std::ops::Try`][try-trait]
@@ -89,6 +170,7 @@ fn main() {
 [infallible]: https://doc.rust-lang.org/1.95.0/std/convert/enum.Infallible.html
 [from-residual-trait]: https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html
 [try-trait-v2-rfc]: https://github.com/rust-lang/rfcs/blob/master/text/3058-try-trait-v2.md
+[try-trait-v2-residual]: https://github.com/rust-lang/rust/issues/91285
 [try-trait]: https://doc.rust-lang.org/1.95.0/std/ops/trait.Try.html
 [github-rfc-discussion]: https://triagebot.infra.rust-lang.org/gh-comments/rust-lang/rust/issues/84277
 [option-as-try]: https://doc.rust-lang.org/1.95.0/std/ops/trait.Try.html#associatedtype.Residual-2
