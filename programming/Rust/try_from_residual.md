@@ -22,7 +22,7 @@ Note that this design has a merit that when inside a function returning `Option<
 
 # Questions
 
-## <a name="multiple-from-residual-impl"></a> Multiple [`FromResidual`][from-residual-trait] Implementations for Certain Types
+## <a id="multiple-from-residual-impl"></a> Multiple [`FromResidual`][from-residual-trait] Implementations for Certain Types
 
 At first glance, since every (generic) type may only implement `Try` once, and that exact implementation defines exactly the (generic) associated type `<T as Try>::Residual`, based on which `FromResidual`/`?` is implemented, why some [types](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3COption%3CInfallible%3E%3E-for-Option%3CT%3E) [have](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CYeet%3C()%3E%3E-for-Option%3CT%3E) [multiple](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CResult%3CInfallible,+E%3E%3E-for-Result%3CT,+F%3E) [implementations](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CYeet%3CE%3E%3E-for-Result%3CT,+F%3E) of [`FromResidual`](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#implementors), for you cannot implement `Try` twice anyway, no? Trait specialization comes to play here, or is `FromResidual` "overloaded" in purpose here? What is [`Yeet`][yeet] anyway?
 
@@ -35,7 +35,7 @@ The gist is that while currently (again, May 2026, Rust 1.95.0/1.98.0) only with
 - `T: Try`
 - `Ret: FromResidual<<T as Try>::Residual>`
 
-So like in the [demo](#the-question-mark-operator-), `MyTry: Try` and `Result: FromResidual<BareResidual>`, and thus we may say `_ = MyTry(false)?;` in a function that returns `Result`. [wut](wut)
+So like in the [demo](#the-question-mark-operator-), `MyTry: Try` and `Result: FromResidual<BareResidual>`, and thus we may say `_ = MyTry(false)?;` in a function that returns `Result`.
 
 To reiterate, it's the type upon which we apply the `?` operator that needs to be `Try`, provided its `Try::Residual` is _convertable_ to the return type, in the sense that the returning type has `FromResidual` implementation for that `Try::Residual`.
 
