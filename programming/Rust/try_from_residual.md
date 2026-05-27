@@ -22,13 +22,28 @@ Note that this design has a merit that when inside a function returning `Option<
 
 # Questions
 
-## Multiple [`FromResidual`][from-residual-trait] Implementations for Certain Types
+## <a name="multiple-from-residual-impl"></a> Multiple [`FromResidual`][from-residual-trait] Implementations for Certain Types
 
 At first glance, since every (generic) type may only implement `Try` once, and that exact implementation defines exactly the (generic) associated type `<T as Try>::Residual`, based on which `FromResidual`/`?` is implemented, why some [types](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3COption%3CInfallible%3E%3E-for-Option%3CT%3E) [have](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CYeet%3C()%3E%3E-for-Option%3CT%3E) [multiple](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CResult%3CInfallible,+E%3E%3E-for-Result%3CT,+F%3E) [implementations](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#impl-FromResidual%3CYeet%3CE%3E%3E-for-Result%3CT,+F%3E) of [`FromResidual`](https://doc.rust-lang.org/1.95.0/std/ops/trait.FromResidual.html#implementors), for you cannot implement `Try` twice anyway, no? Trait specialization comes to play here, or is `FromResidual` "overloaded" in purpose here? What is [`Yeet`][yeet] anyway?
 
 ## When Does The `?` Operator Apply?
 
 I mean even with `#![feature(try_trait_v2, try_trait_v2_residual)]`, it seems one cannot use `?` within arbitrary function, even though that function returns one's customized type which is/implements `Try`...?
+
+The gist is that while currently (again, May 2026, Rust 1.95.0/1.98.0) only within functions that return `Option`/`Result` one may invoke the `?` operator, the exact type of the expression upon which `?` acts is sort of loose. We may say `let _ = T::new(/* omit */)?` inside function that returns `Ret` as long as...
+
+- `T: Try`
+- `Ret: FromResidual<<T as Try>::Residual>`
+
+So like in the [demo](#the-question-mark-operator-), `MyTry: Try` and `Result: FromResidual<BareResidual>`, and thus we may say `_ = MyTry(false)?;` in a function that returns `Result`. [wut](wut)
+
+To reiterate, it's the type upon which we apply the `?` operator that needs to be `Try`, provided its `Try::Residual` is _convertable_ to the return type, in the sense that the returning type has `FromResidual` implementation for that `Try::Residual`.
+
+So the idea has been the same (again, May 2026, Rust 1.95.0/1.98.0): only within functions that gives `Option`/`Result` we may use the `?` operator; the `Try` gives us freedom as to upon what additional types we may call the `?` operator, and to facilitate this functionality we need to implement `FromResidual` for the _foreign_ types `Option`/`Result`.
+
+This also explains why certain types have [_multiple_](#multiple-from-residual-impl) `FromResidual` implementations. This doesn't exactly make sense at first glance, since you cannot `impl Try` for them multiple times anyway; it's to make functions that return them have more freedom, in the sense that within those functions we have more types at which we may throw a `?` operator.
+
+Speaking of which, now that I think about it, it's kinda intriguing we may `impl<T, E: Default> FromResidual<BareResidual> for Result<T, E>` here. Huh. Orphan rules...?
 
 ## What Is [`try_trait_v2_residual`][try-trait-v2-residual] Anyway?
 
@@ -92,7 +107,7 @@ fn main() {
 }
 ```
 
-# Another Demo
+## Another Demo
 
 This plays with `Try`/`FromResidual`/`Residual`: it's possible to make your type accomodate `<T as Try>::Residual` for several `T`: another trait!
 
@@ -156,6 +171,61 @@ fn main() {
         Triable::Residual(ControlFlow::<_, Infallible>::Break("野獣先輩")),
     ];
     v.into_iter().try_for_each(std::convert::identity);
+}
+```
+
+## The Question Mark Operator `?`
+
+```rust
+#![feature(try_trait_v2, try_trait_v2_residual)]
+
+use std::{
+    fmt::Debug,
+    ops::{ControlFlow, FromResidual, Residual, Try},
+};
+
+struct MyTry(bool);
+impl Try for MyTry {
+    type Residual = BareResidual;
+    type Output = ();
+    fn from_output(_: <Self as Try>::Output) -> Self {
+        MyTry(true)
+    }
+    fn branch(self) -> ControlFlow<<Self as Try>::Residual, <Self as Try>::Output> {
+        match self.0 {
+            true => ControlFlow::Continue(()),
+            false => ControlFlow::Break(BareResidual),
+        }
+    }
+}
+impl FromResidual<BareResidual> for MyTry {
+    fn from_residual(_: BareResidual) -> Self {
+        MyTry(false)
+    }
+}
+impl Residual<()> for BareResidual {
+    type TryType = MyTry;
+}
+
+struct BareResidual;
+impl<T, E> FromResidual<BareResidual> for Result<T, E>
+where
+    E: Default,
+{
+    fn from_residual(_: BareResidual) -> Self {
+        Err(E::default())
+    }
+}
+
+fn test_result<O: Debug, E: Default + Debug>(ret: Result<O, E>) -> Result<(), E> {
+    _ = MyTry(ret.is_ok())?;
+    println!("{ret:?} is uninteresting...");
+    ret.map(|_| ())
+}
+
+fn main() {
+    test_result(Ok::<i32, u32>(114514)).unwrap();
+    _ = test_result(Err::<i32, u32>(67)).inspect_err(|e| println!("Now we're talking: {e:?}"));
 }
 ```
 
