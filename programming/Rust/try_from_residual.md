@@ -20,6 +20,18 @@ Thus the _GAT_ for `Result`: `<Result<T, E> as Try>::Residual` is defined to be 
 
 Note that this design has a merit that when inside a function returning `Option<T>`, one can *never* accidentally trigger early return via `?` over types other than `Option`, e.g. `Result::<T, E>::Err(e)?`, for the only `FromResidual<X>` which `Option<T>` implements is `X = Option<Infallible>` as defined in `<Option as Try>::Residual`. In other words, even though they all uses `?` operator, we maintain (up to the implementors) certain sort of distinction: explicit over implicit.
 
+# Third-Party Crates on Error Handling
+
+Some third-party _error types_ like [`anyhow::Error`](https://docs.rs/anyhow/1.0.102/anyhow/struct.Error.html) or [`eyre::Report`](https://docs.rs/eyre/0.6.12/eyre/struct.Report.html) are made to be supercharged version of `std::error::Error` with backtrace, description, etc. With [their](https://docs.rs/anyhow/1.0.102/anyhow/index.html#details) [corresponding](https://docs.rs/eyre/0.6.12/eyre/#details) `Result` implementation, one may and is supposed to write functions returning such `Result`, in which they may handle boilerplate `Result`-returning subroutines with the `?` operator.
+
+Note that these error types are themselves _not_ `std::error::Error`, but do implement something like `From<E: std::error::Error>`. Due the default blanket `impl From<T> for T` implementation, this is understandable. But why do we _need_ the error types to be `From<E: std::error:Error>` in the first place anyway?
+
+IMHO, _and that's a huge **my humble opinion**_ so take with a huge chunk of salt, this is ultimately for people to play with the `?` operator nicely. Rust had [historically](https://github.com/rust-lang/rfcs/blob/master/text/1859-try-trait.md#desugaring-and-the-try-trait) been sneaking in a `From::from` in the early-return route when dealing with `Result`/`?` desugaring. Thus in order for these crates to make any sense, instead of writing `Result::map_err(MyFancyError::from_std)` or alike everywhere, they took advantage of such desugaring and implements `From<E: std::error::Error>` for their own error types. As such, as long as your customized errors are `std::error::Error`, including such crates becomes a breeze.
+
+This however is indeed a bit counter-intuitive. I mean your error type is supposed to be, well, an error type, so naturally we'd expect them to be `std::error::Error` as well. Again, this unfortunately contradicts with the default blanket implementation.
+
+[Turns](https://gist.github.com/yaahc/9fe7a7631ac35df227e2061bd5d56be3) [out](https://rust-lang.zulipchat.com/#narrow/channel/257204-project-error-handling/topic/separating.20From.3CE.3A.20Error.3E.20from.20Box.3Cdyn.20Error.3E/near/228027529) [this dilemma](https://github.com/rust-lang/rfcs/blob/master/text/3058-try-trait-v2.md#why-does-fromresidual-take-a-generic-type) is solved by `try-trait-v2`: it's the `Try` type that determines with what `Try::Residual` type control flow would be short-circuited, and it's up to the outer type which implements the _generic_ `FromResidual` trait to decide if that specific `Try::Residual` is accepted in what way. In other words, the error types may well be `std::error::Error`, too: it's the `Result` type that needs to have ergonomics built-in, and the way it's implemented is up to the exact `FromResidual` implementation.
+
 # Questions
 
 ## <a id="multiple-from-residual-impl"></a> Multiple [`FromResidual`][from-residual-trait] Implementations for Certain Types
@@ -48,6 +60,32 @@ Speaking of which, now that I think about it, it's kinda intriguing we may `impl
 ## What Is [`try_trait_v2_residual`][try-trait-v2-residual] Anyway?
 
 If you're gonna play with `Try` in May 2026, you're gonna need both `try_trait_v2` and `try_trait_v2_residual` enabled using nightly (`cargo 1.98.0-nightly (4d1f98451 2026-05-15)`). Basically boils down to implement `std::ops::Residual` for your (generic) associated type `<T as Try>::Residual` and _link_ to the `T: Try`.
+
+## So-Called Try Blocks: `try {}`
+
+What are they? And what are _homogeneous try blocks_? Meaning there's possibility for _heterogeneous try blocks_...?
+
+# [`Poll<Result<T, E>>`][poll-result]
+
+```rust
+impl<T, E> Try for Poll<Result<T, E>> {
+    type Residual = <Result<T, E> as Try>::Residual; // Result<Infallible, E>
+    type Output = Poll<T>;
+}
+impl<T, E> FromResidual<Result<Infallible, E>> for Poll<Result<T, E>> {}
+```
+
+Again, implementing `Try` makes you applicable to the `?` operator in certain functions, and your `Try::Residual` determines exactly what functions (specifically what type does the function return) you are actually allowed to do this.
+
+Since `<Poll<Result<T, E>> as Try>::Residual` is specified exactly same as `<Result<T, E> as Try>::Residual` i.e. `Result<Infallible, E>`, we have four cases:
+
+```rust
+fn make_pr<T, E>() -> Poll<Result<T, E>> {}
+fn pr_in_pr<T, E>() -> Result<T, E> { _ = make_pr()?; }
+fn pr_in_r<T, E>() -> Result<T, E> { _ = make_pr()?; }
+fn r_in_pr<T, E>() -> Result<T, E> {}
+fn r_in_r<T, E>() -> Result<T, E> { /* generic `Result` type, not interesting. */}
+```
 
 # Demos
 
@@ -244,6 +282,7 @@ fn main() {
 [try-trait]: https://doc.rust-lang.org/1.95.0/std/ops/trait.Try.html
 [github-rfc-discussion]: https://triagebot.infra.rust-lang.org/gh-comments/rust-lang/rust/issues/84277
 [option-as-try]: https://doc.rust-lang.org/1.95.0/std/ops/trait.Try.html#associatedtype.Residual-2
+[poll-result]: https://doc.rust-lang.org/1.95.0/std/task/enum.Poll.html#impl-Try-for-Poll<Result<T,+E>>
 [result-as-try]: https://doc.rust-lang.org/1.95.0/std/ops/trait.Try.html#associatedtype.Residual-3
 [result-as-from-residual]: https://doc.rust-lang.org/1.95.0/std/result/enum.Result.html#impl-FromResidual%3CResult%3CInfallible,+E%3E%3E-for-Result%3CT,+F%3E
 [yeet]: https://doc.rust-lang.org/1.95.0/std/ops/struct.Yeet.html
