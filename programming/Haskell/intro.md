@@ -141,7 +141,7 @@ preDiy
       }
 ```
 
-You might want to look into [`@` for patter binding (yeah just like Rust!) aka _as-pattern_ and _`case` expressions_ which also accepts patterns](https://www.haskell.org/tutorial/patterns.html), [how baskslash `\` makes another way defining a function](https://stackoverflow.com/a/34794297/9933842), and [how we get from `Bind::Rec` to `Rec {` and `end Rec }`](https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/Core/Ppr.hs).
+You might want to look into [`@` for pattern binding (just like Rust!) aka _as-pattern_ and _`case` expressions_ which also accepts patterns](https://www.haskell.org/tutorial/patterns.html), [how backslash `\` makes lambda functions][haskell-lambda-explained], and [how we get from `Bind::Rec` to `Rec {` and `end Rec }`](https://gitlab.haskell.org/ghc/ghc/-/blob/master/compiler/GHC/Core/Ppr.hs).
 
 So yes, at least in the GHC Core stage, the prelude version does recurse with the truncated version of the slice, whereas our DIY version recurses with a version which is guaranteed not to be empty, only to check if it's empty right in the first step into the recursion.
 
@@ -157,6 +157,137 @@ N.B. much is yet to be fact check and organized from [AI slop](./unorganized-gem
 [ghc-join]: https://www.google.com/search?q=https://gitlab.haskell.org/ghc/ghc/-/wikis/commentary/compiler/join-points
 [ghc-sans-continuations]: https://www.microsoft.com/en-us/research/wp-content/uploads/2016/11/join-points-pldi17.pdf
 [ghc-stg]: https://gitlab.haskell.org/ghc/ghc/-/wikis/commentary/compiler/generated-code
+[haskell-lambda-explained]: https://stackoverflow.com/a/34794297/9933842
+
+# Chapter 3
+
+## Currying
+
+Note that function definitions are essentially _giving names to (anonymous) lambdas_ modulo _pattern matching_, so conceptually we may translate
+
+```haskell
+zip' :: [a] -> [b] -> [(a, b)]
+zip' []     _      = []
+zip' _      []     = []
+zip' (x:xs) (y:ys) = (x, y) : zip' xs ys
+```
+
+into some (pseudo) Rust code like this
+
+```rust
+match &lhs {
+    [] => |_| { [] },
+    [l, lhs@..] => |rhs| match &rhs {
+        [] => [],
+        [r, rhs@..] => vec![(l, r)].append(&mut (zip_prime(lhs))(rhs))
+    }
+}
+```
+
+and with some lifetime bypassing with `Box<dyn Fn>` (could you think of more efficient way? since this allocates a _lot_...; maybe worker functions...? but denoting lifetime with lambdas is still [rfc](https://internals.rust-lang.org/t/pre-rfc-allow-for-a-syntax-with-closures-for-explicit-higher-ranked-lifetimes/15888)...), and you cannot implement your own [functor like you do with operator `()` overloading in C++ in 2026 Rust 1.96](https://github.com/rust-lang/rust/issues/29625).
+
+```rust
+fn zip_prime<T: Copy, U: Copy>(
+    lhs: &[T],
+) -> Box<dyn Fn(&[U]) -> Vec<(T, U)> + '_> {
+    match lhs {
+        [] => Box::new(|_| Vec::new()),
+        [l, lhs @ ..] => Box::new(move |rhs| match rhs {
+            [] => Vec::new(),
+            [r, rhs @ ..] => [(*l, *r)]
+                .into_iter()
+                .chain((zip_prime(lhs))(rhs))
+                .collect(),
+        }),
+    }
+}
+```
+
+Here's a way to think about curried functions: consider only the types. So `zip' :: [a] -> [b] -> [(a, b)]`: when we say `zip' xs ys`, we first note that `zip' xs` itself is an _expression_ (?) of a _function_ (remember that function calls are of highest precedence and binds to left?), of which type is `[b] -> [(a, b)]`, so when we then say `zip' xs ys`, the function `zip' xs` eats `ys` so overall the expression (?) yields a `[(a, b)]`.
+
+So after the type, and correspondingly the expression involved when calling the curried function, got figured out, we may think about its contents.
+Welp in this case it concatenate two lists, one of which is (recursively) calling "itself". That's it.
+
+```rust
+fn zip_prime_vec_deque<T, U>(lhs: Vec<T>) -> impl FnOnce(Vec<U>) -> Vec<(T, U)> {
+    use std::collections::VecDeque;
+    fn zip_prime_vec_deque_inner<T, U>(
+        mut lhs: VecDeque<T>,
+    ) -> impl FnOnce(VecDeque<U>) -> VecDeque<(T, U)> {
+        move |mut rhs: VecDeque<U>| {
+            if let Some(l) = lhs.pop_front() {
+                if let Some(r) = rhs.pop_front() {
+                    std::iter::once((l, r))
+                        .chain((zip_prime_vec_deque_inner(lhs))(rhs))
+                        .collect()
+                } else {
+                    VecDeque::new()
+                }
+            } else {
+                VecDeque::new()
+            }
+        }
+    }
+    move |rhs: Vec<U>| {
+        Vec::from((zip_prime_vec_deque_inner(VecDeque::from(lhs)))(
+            VecDeque::from(rhs),
+        ))
+    }
+}
+```
+
+```rust
+/// XXX:
+/// O(max(n, m)) and allocates a lot due to the [`std::iter::FromIterator`] calls
+fn zip_prime_linear_max_fn_once<T, U>(mut lhs: Vec<T>) -> impl FnOnce(Vec<U>) -> Vec<(T, U)> {
+    lhs.reverse();
+    fn zip_back<T, U>(mut lhs: Vec<T>) -> impl FnOnce(Vec<U>) -> Vec<(T, U)> {
+        move |mut rhs: Vec<U>| {
+            if let Some(l) = lhs.pop() {
+                if let Some(r) = rhs.pop() {
+                    std::iter::once((l, r))
+                        .chain((zip_back(lhs))(rhs))
+                        .collect()
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        }
+    }
+    move |mut rhs: Vec<U>| {
+        rhs.reverse();
+        Vec::from((zip_back(lhs))(rhs))
+    }
+}
+```
+
+```rust
+/// It might be interesting to be even more lazier,
+/// in the sense return [`Iterator`] instead of allocate,
+/// but see also https://github.com/rust-lang/rust/issues/99697
+fn zip_prime_clone_fn_once<T: Clone, U: Clone>(lhs: &[T]) -> impl FnOnce(&[U]) -> Vec<(T, U)> + '_ {
+    /// Is pre-allocate like this considered functional programming?
+    /// If not, how to pre-allocate in pure FP?
+    fn zip_prime_clone_fn_once_inner<T: Clone, U: Clone>(
+        mut ret: Vec<(T, U)>,
+        lhs: &[T],
+    ) -> impl FnOnce(&[U]) -> Vec<(T, U)> {
+        move |rhs: &[U]| match (lhs, rhs) {
+            ([], _) | (_, []) => ret,
+            ([l, lhs @ ..], [r, rhs @ ..]) => {
+                ret.push((T::clone(l), U::clone(r)));
+                (zip_prime_clone_fn_once_inner(ret, lhs))(rhs)
+            }
+        }
+    }
+    move |rhs: &[U]| {
+        let ret = Vec::with_capacity(std::cmp::min(lhs.len(), rhs.len()));
+        (zip_prime_clone_fn_once_inner(ret, lhs))(rhs)
+    }
+}
+```
 
 # Quirks
 
