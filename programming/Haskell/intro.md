@@ -205,8 +205,9 @@ fn zip_prime<T: Copy, U: Copy>(
 
 Here's a way to think about curried functions: consider only the types. So `zip' :: [a] -> [b] -> [(a, b)]`: when we say `zip' xs ys`, we first note that `zip' xs` itself is an _expression_ (?) of a _function_ (remember that function calls are of highest precedence and binds to left?), of which type is `[b] -> [(a, b)]`, so when we then say `zip' xs ys`, the function `zip' xs` eats `ys` so overall the expression (?) yields a `[(a, b)]`.
 
-So after the type, and correspondingly the expression involved when calling the curried function, got figured out, we may think about its contents.
-Welp in this case it concatenate two lists, one of which is (recursively) calling "itself". That's it.
+So we have the type, and correspondingly how to mentally parse the function call expression of curried functions, figured out, now we may think about its body.
+Welp in this case it concatenate two lists, one of which is (recursively) calling "itself".
+That's it.
 
 ```rust
 fn zip_prime_vec_deque<T, U>(lhs: Vec<T>) -> impl FnOnce(Vec<U>) -> Vec<(T, U)> {
@@ -286,6 +287,124 @@ fn zip_prime_clone_fn_once<T: Clone, U: Clone>(lhs: &[T]) -> impl FnOnce(&[U]) -
         let ret = Vec::with_capacity(std::cmp::min(lhs.len(), rhs.len()));
         (zip_prime_clone_fn_once_inner(ret, lhs))(rhs)
     }
+}
+```
+
+## Class Constraint and Polymorphic
+
+> A type that contains _one or more type variables_ is called _**polymorphic**_ ("of many forms"), as is an expression with such a type. Hence, `[a] -> Int` is a _polymorphic type_ and `length` is a _polymorphic function_. More generally, many of the functions provided in the standard prelude are polymorphic.
+
+> The idea that `+` can be applied to numbers of any numeric type is made precise in its type by the inclusion of a _class constraint_. Class constraints are written in the form `C a`, where `C` is the name of a class and `a` is a type variable.
+> function `(+)` has type `a -> a -> a`. (Parenthesising an operator converts it into a curried function, as we shall see in chapter 4.)
+
+> A type that contains _one or more class constraints_ is called _**overloaded**_, as is an expression with such a type.
+> Hence, `Num a => a -> a -> a` is an _overloaded type_ and `(+)` is an _overloaded function_.
+
+versus [ad-hoc](https://wiki.haskell.org/index.php?title=Polymorphism&oldid=59216) [polymorphism](https://www.reddit.com/r/haskell/comments/5mbblu/comment/dc29thl)...?
+
+> Numbers themselves are also overloaded. For example, `3 :: Num a => a` means that for any numeric type `a`, the value `3` has type `a`. In this manner, the value `3` could be an integer, a floating-point number, or more generally a value of any numeric type, depending on the context in which it is used.
+
+So _overloading_. In C++, it's specifying what different types, or different type classes in Haskell terms if we consider C++ inheritance sort of type classes, to have different behaviors despite the fact that the code "look the same". In other words, a compile time trick to write the same code for some set of types allowing them to have different behaviors.
+
+```cpp
+#include <cstdint>
+#include <iostream>
+#include <typeinfo>
+
+struct A {
+        int32_t operator()(int32_t i) const {
+            std::cout << "A::()(int32_t)" << std::endl;
+            return i + 1;
+        }
+        u_int8_t operator()(u_int8_t u) const {
+            std::cout << "A::()(u_int8_t)" << std::endl;
+            return u + 1;
+        }
+};
+class B : public A {};
+
+void foo(const B &b) { std::cout << "B" << std::endl; }
+void foo(const A &b) { std::cout << "A" << std::endl; }
+
+int main() {
+    const A &a = {};
+    const B &b = {};
+    foo(a);
+    foo(b);
+    foo(static_cast<const A &>(b));
+
+    auto a_3 = a(3);
+    auto b_4u = b((u_int8_t)4);
+    auto a_4i8 = a((int8_t)4);
+    std::cout << typeid(a_3).name() << std::endl;
+    std::cout << typeid(b_4u).name() << std::endl;
+    std::cout << typeid(a_4i8).name() << std::endl;
+
+    return 0;
+}
+```
+
+So in [Haskell](https://www.haskell.org/tutorial/classes.html), things like `wut :: (Num a) => a -> a -> [a]`, are ways to implement such overloading behavior, thus we mention them as _overloaded types_.
+In other words, we expect the (concrete) types in certain _type class_ to all have certain "behaviors" - operators or functions we may invoke - and we do expect the implementation to be somewhat arbitrary.
+So [very similar to (but more powerful in some way than) Rust traits](https://www.reddit.com/r/rust/comments/1e0fuon/comment/lcmljta), essentially.
+
+```haskell
+class Eq a where
+  (==)                  :: a -> a -> Bool
+
+instance Eq Integer where
+  x == y                =  x `integerEq` y
+
+instance Eq Float where
+  x == y                =  x `floatEq` y
+
+instance (Eq a) => Eq (Tree a) where
+  Leaf a         == Leaf b          =  a == b
+  (Branch l1 r1) == (Branch l2 r2)  =  (l1==l2) && (r1==r2)
+  _              == _               =  False
+```
+
+```rust
+trait Foo {
+    fn foo(&self);
+}
+struct Bar;
+struct Baz;
+impl Foo for Bar {
+    fn foo(&self) {
+        println!("{}", std::any::type_name::<Self>());
+    }
+}
+impl Foo for Baz {
+    fn foo(&self) {
+        println!("{}", std::any::type_name::<Self>());
+    }
+}
+```
+
+> In this sense, we expect `==` to be overloaded to carry on these various tasks.
+> Type classes conveniently solve both of these problems. They allow us to declare which types are instances of which class, and to provide definitions of the overloaded operations associated with a class.
+
+There is a related trick in Rust: you may define `std::ops::Add<T>` for multiple _concrete_ `T`, thus overloading operator `+` (interesting to note that you cannot do this to `Deref` since in this case there's only one `Deref` trait and the target specified by `<Ptr as Deref>::Target`; [higher kinded types](https://news.ycombinator.com/item?id=17537980)?) in more of C++ sense.
+
+```rust
+struct App;
+impl std::ops::Add<&str> for &App {
+    type Output = String;
+    fn add(self, rhs: &str) -> Self::Output {
+        String::from_iter([rhs, "hehe"])
+    }
+}
+impl std::ops::Add<u32> for &App {
+    type Output = u32;
+    fn add(self, _: u32) -> Self::Output {
+        67
+    }
+}
+fn hehe() {
+    const APP: &App = &App;
+    println!("{:?}", APP + "wut");
+    println!("{:?}", APP + 114514);
 }
 ```
 
