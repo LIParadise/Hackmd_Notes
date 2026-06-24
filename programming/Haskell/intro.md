@@ -768,6 +768,96 @@ isort (x : xs) = insertIntoSorted x (isort xs)
 
 [^lsp]: haskell-language-server version: 2.13.0.0 (GHC: 9.10.3)
 
+_Multiple recursion_ refers to the recursion happens more than once, e.g. quick sort and (naive) Fibonacci implementation
+
+```haskell
+stableQsort :: (Ord a) => [a] -> [a]
+stableQsort [] = []
+stableQsort (pivot : xs) =
+  let smallers = [s | s <- xs, s < pivot]
+      largers = [l | l <- xs, l < pivot]
+      equals = [e | e <- xs, e == pivot]
+   in stableQsort smallers ++ [pivot] ++ equals ++ stableQsort largers
+
+fib :: (Integral a) => a -> a
+fib n
+  | n < 0 = undefined
+  | n == 0 = 1
+  | n == 1 = 1
+  | otherwise = fib (n - 1) + fib (n - 2)
+```
+
+## `foldl` and `foldr`, revisited with `scanl` and `scanr`
+
+Note that we got a list and via left/right associative operations with `foldl`/`foldr` we get a single result. At times we're also interested in how we actually got that final result. All is not lost: we got `scanl` and `scanr`. Again, they are about recursively applying left/right associative functions.
+
+Again, think of magnets. For `scanl`, think of $\{ \text{seed}, a_0, a_1, a_2, a_3, \cdots \}$, so one by one we snap 'em together to get $\{ f(\text{seed}, a_0), a_1, a_2, a_3, \cdots \}$ then $\{ f(f(\text{seed}, a_0), a_1), a_2, a_3, \cdots \}$ - remember we're trying to record the process, so this is what we actually get: $\{s, f(s, a_0), f(f(s, a_0), a_1), \cdots \}$.
+
+But wait, that means `scanl` simply gets us the result of applying the _same exact function again and again_ on some `seed :: b`, except also with some extra argument specified by the list `[a]`... so basically a fancier prelude `iterate`! Note also how `scanl` and `iterate` are so close to loop with mutating states like we often do in imperative languages. Anyhow with this in mind the implementation unfolds itself naturally:
+
+```haskell
+myScanl :: (b -> a -> b) -> b -> [a] -> [b]
+myScanl f seed xs =
+  let myIterateWith _ _ [] = []
+      myIterateWith g seed' (y : ys) = sprout : myIterateWith g sprout ys
+        where
+          sprout = f seed' y
+   in seed : myIterateWith f seed xs
+```
+
+And thus just like `iterate`, `scanl` inherently deals with infinite lists just fine, no matter what the supplied function actually does. For example:
+
+```haskell
+print $ take 67 $ scanl (+) 69 [42..]
+```
+
+One might ponder, hold a sec, then why does `foldl` behave worse in the sense no matter what function is supplied, as long as the input list is infinite, both `foldl` and `foldl'` just hangs? Since `scanl` does _more_ things than `foldl`...?
+
+Well for `foldl` on infinite lists, the "expression" (I dunno if this is the correct terminology) we need to "resolve" is _always_ a `foldl`. _Always_. That your function is not strict or lazy with certain patterns does not matter: we need to know what the `foldl` means, then we need to unpack it only to get yet another `foldl` thunk, and thus in runtime it does nothing but allocating thunks on the heap like crazy. In `scanl` terms, it's like asking the _last_ element of the infinite list, and thus it hangs just like why `(last . repeat) ()` also hangs.
+
+I mean consider the magnet analogy again: $\{s, a_0, a_1, a_2, a_3, \cdots\}$ and one by one snap 'em with $f$: $\{s, f(s, a_0), f(f(s, a_0), a_1), f(f(f(s, a_0), a_1), a_2), \cdots \}$: as long as we ask only finite amount of them, we need only linear time overhead to form such list (I mean you could Hanoi tower with `scanl` and that's definitely not linear time but that's $f$'s fault).
+
+Now to `scanr`. Using the magnet analogy again, what we want to do is record the process of iteratively snapping 'em, i.e. $\{ a_0, a_1, a_2, \cdots, a_n, \text{seed} \}$, $\{ a_0, a_1, a_2, \cdots, a_{n-1}, f(a_n, \text{seed}) \}$, $\{ a_0, a_1, a_2, \cdots, a_{n-2}, f(a_{n-1}, f(a_n, \text{seed})) \}$ and get the list
+
+$$
+\begin{aligned}
+\{ \\
+  & f(a_0, f(a_1, f(a_2, \cdots, f(a_n, \text{seed})))), \\
+  & f(a_1, f(a_2, f(a_3, \cdots, f(a_n, \text{seed})))), \\
+  & \cdots, \\
+  & f(a_{n-1}, f(a_n, \text{seed})), \\
+  & f(a_n, \text{seed}), \\
+  & \text{seed} \\
+\}
+\end{aligned}
+$$
+
+As `scanr` is just `foldr` except now we don't let the information just pass by, `scanr` performs similarly to `foldr` when given infinite list: it _exposes the function patterns in each step_ and thus as long as the function is not _strict_ (?) in the second argument and we do not ask for infinite far behaviors we're good to go just like `foldr`, and in which case it's ok to simply use `undefined` as the seed for it does not matter.
+
+```haskell
+-- ok
+take 5 $ scanr (\n -> const (n `rem` 4 == 0)) undefined [1,4..]
+-- loops
+last $ scanr (\n -> const (n `rem` 4 == 0)) undefined [1,4..]
+
+-- ok: `(head . scanr) == foldr`
+take 15 $ scanr (\m -> const (if m >= 7 then 7 else m)) undefined [-2,-1..] -- `[-2,-1,0,1,2,3,4,5,6,7,7,7,7,7,7]`
+foldr (\m -> const (if m >= 7 then 7 else m)) undefined [-2,-1..] -- `-2`
+```
+
+```haskell
+myScanr :: (a -> b -> b) -> b -> [a] -> [b]
+myScanr _ seed [] = [seed]
+myScanr f seed (x : xs) = f x y : ys
+  where
+    ys = myScanr f seed xs
+    y = head ys
+```
+
+So in terms of friendliness with regard to infinite input, one might say `scanl` takes the lead since it simply gives another input list, followed by `foldr` and `scanr` of which behavior depends heavily on the input function, followed by `foldl`/`foldl'` which never gives any value and became a memory hog.
+
+It's all about associativity and how the "magnets" are placed!
+
 ## Ch6 Questions
 
 - `and`/`or`/`any`/`all` are implemented [via](https://hackage-content.haskell.org/package/base-4.22.0.0/docs/Prelude.html#g:14) `foldMap`. Why not simply `foldr`?
@@ -784,6 +874,7 @@ isort (x : xs) = insertIntoSorted x (isort xs)
     (x:xs) `app` ys = x : (xs `app` ys)
     ```
   - `drop 1 [1,3,5,undefined]` throws exception: is `drop` somewhat lazy?
+- Fibonacci sequences, in forward order?
 
 # Quirks
 
